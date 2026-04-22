@@ -1,0 +1,63 @@
+# Monad Full Node Dockerfile
+# Based on official installation guide: https://docs.monad.xyz/node-ops/full-node-installation
+
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG MONAD_VERSION=0.14.1
+
+# Install base dependencies
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    curl \
+    wget \
+    jq \
+    aria2 \
+    zstd \
+    lz4 \
+    file \
+    nvme-cli \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    supervisor \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add Category Labs APT repository and install Monad
+RUN add-apt-repository -y ppa:category-labs/monad \
+    && apt-get update \
+    && apt-get install -y monad=${MONAD_VERSION} \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create monad user and directories
+RUN useradd -m -u 10001 -s /bin/bash monad \
+    && mkdir -p /home/monad/monad-bft/config/validators \
+    && mkdir -p /home/monad/monad-bft/config/forkpoint \
+    && mkdir -p /home/monad/monad-bft/ledger \
+    && mkdir -p /home/monad/.monad-keystore \
+    && mkdir -p /triedb \
+    && chown -R monad:monad /home/monad /triedb
+
+# Copy supervisord configuration
+COPY supervisord.conf /etc/supervisor/conf.d/monad.conf
+
+# Copy entrypoint script
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+USER monad
+WORKDIR /home/monad
+
+# Expose ports
+# 8000: Consensus P2P (TCP/UDP)
+# 8001: Authenticated peer discovery (UDP)
+# 8545: RPC HTTP (standard Ethereum RPC port)
+# 8546: RPC WebSocket
+# 8889: Metrics
+EXPOSE 8000/tcp 8000/udp 8001/udp 8545 8546 8889
+
+VOLUME ["/home/monad/monad-bft", "/triedb"]
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/monad.conf"]

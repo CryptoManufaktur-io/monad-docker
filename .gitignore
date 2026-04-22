@@ -1,0 +1,10 @@
+.env*
+*.swp
+*.swo
+*.swn
+*.bak
+*.original
+custom.yml
+keys/
+.agent/
+data/
