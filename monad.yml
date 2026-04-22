@@ -26,6 +26,10 @@ services:
       # Beneficiary address for rewards (use burn address for full nodes)
       - BENEFICIARY_ADDRESS=${BENEFICIARY_ADDRESS:-0x0000000000000000000000000000000000000000}
 
+      # Logging level
+      - RUST_LOG=${LOG_LEVEL:-info}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
       # Ports
       - CONSENSUS_PORT=${CONSENSUS_PORT:-8000}
       - AUTH_PORT=${AUTH_PORT:-8001}
@@ -121,6 +125,8 @@ services:
     environment:
       - NETWORK=${NETWORK}
       - NODE_NAME=${NODE_NAME}
+      - RUST_LOG=${LOG_LEVEL:-info}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       - monad-bft-data:/home/monad/monad-bft
       - triedb-data:/triedb
