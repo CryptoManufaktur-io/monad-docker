@@ -21,6 +21,7 @@ services:
       nofile:
         soft: 16384
         hard: 16384
+    privileged: true
     security_opt:
       - seccomp=unconfined
     environment:
@@ -60,7 +61,7 @@ services:
     volumes:
       - monad-bft-data:/home/monad/monad-bft
       - monad-backup:/opt/monad/backup
-      - triedb-data:/triedb
+      - triedb-data:/dev/triedb
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
@@ -104,7 +105,7 @@ services:
     volumes:
       - monad-bft-data:/home/monad/monad-bft
       - monad-backup:/opt/monad/backup
-      - triedb-data:/triedb
+      - triedb-data:/dev/triedb
 
 volumes:
   monad-bft-data:
