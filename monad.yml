@@ -12,105 +12,74 @@ services:
       context: ./monad
       dockerfile: Dockerfile.source
       args:
-        - MONAD_VERSION=${MONAD_VERSION:-0.14.1}
+        MONAD_VERSION: ${MONAD_VERSION:-}
     image: monad:local
     pull_policy: never
-    user: monad
     restart: unless-stopped
     stop_grace_period: 5m
     environment:
-      # Network configuration (mainnet or testnet)
-      - NETWORK=${NETWORK}
-      - NODE_NAME=${NODE_NAME}
-
-      # Beneficiary address for rewards (use burn address for full nodes)
-      - BENEFICIARY_ADDRESS=${BENEFICIARY_ADDRESS:-0x0000000000000000000000000000000000000000}
-
-      # Logging level
-      - RUST_LOG=${LOG_LEVEL:-info}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-
-      # Ports
-      - CONSENSUS_PORT=${CONSENSUS_PORT:-8000}
-      - AUTH_PORT=${AUTH_PORT:-8001}
-      - RPC_PORT=${RPC_PORT:-8545}
-      - WS_PORT=${WS_PORT:-8546}
-      - METRICS_PORT=${METRICS_PORT:-8889}
-
-      # Keystore password (optional, will be generated if not provided)
-      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
-
-      # Snapshot configuration (optional, for fast sync)
-      - SNAPSHOT=${SNAPSHOT:-}
-      - SNAPSHOT_PART=${SNAPSHOT_PART:-}
-
-      # Remote configuration URLs (optional overrides)
-      - VALIDATORS_REMOTE_URL=${VALIDATORS_REMOTE_URL:-}
-      - FORKPOINT_REMOTE_URL=${FORKPOINT_REMOTE_URL:-}
-
-      # Bootstrap peers (optional)
-      - BOOTSTRAP_PEERS=${BOOTSTRAP_PEERS:-}
-
-      # Data retention settings (in minutes, default 7 days)
-      - RETENTION_BFT_HEADERS=${RETENTION_BFT_HEADERS:-10080}
-      - RETENTION_BFT_BODIES=${RETENTION_BFT_BODIES:-10080}
-      - RETENTION_EXEC_BLOCKS=${RETENTION_EXEC_BLOCKS:-10080}
-      - RETENTION_EXEC_RECEIPTS=${RETENTION_EXEC_RECEIPTS:-10080}
-
-      # RPC/Archive configuration (optional)
-      - ENABLE_TRACE_CALLS=${ENABLE_TRACE_CALLS:-false}
-      - EXECUTION_EXTRA_FLAGS=${EXECUTION_EXTRA_FLAGS:-}
-
-      # AWS Archive configuration (optional)
-      - ARCHIVE_API_KEY=${ARCHIVE_API_KEY:-}
-      - ARCHIVE_BUCKET=${ARCHIVE_BUCKET:-}
-      - ARCHIVE_URL=${ARCHIVE_URL:-}
-      - ARCHIVE_REGION=${ARCHIVE_REGION:-us-east-1}
-
-      # MongoDB Archive configuration (optional)
-      - MONGO_URL=${MONGO_URL:-}
-      - MONGO_DB_NAME=${MONGO_DB_NAME:-monad-archive}
+      NETWORK: ${NETWORK:-mainnet}
+      NODE_ROLE: ${NODE_ROLE:-fullnode}
+      NODE_NAME: ${NODE_NAME:-full_monad_docker}
+      BENEFICIARY_ADDRESS: ${BENEFICIARY_ADDRESS:-0x0000000000000000000000000000000000000000}
+      CONSENSUS_PORT: ${CONSENSUS_PORT:-8000}
+      AUTH_PORT: ${AUTH_PORT:-8001}
+      RPC_PORT: ${RPC_PORT:-8080}
+      WS_PORT: ${WS_PORT:-8081}
+      METRICS_PORT: ${METRICS_PORT:-8889}
+      PUBLIC_IP: ${PUBLIC_IP:-}
+      SELF_RECORD_SEQ_NUM: ${SELF_RECORD_SEQ_NUM:-1}
+      KEYSTORE_PASSWORD: ${KEYSTORE_PASSWORD:-}
+      SNAPSHOT: ${SNAPSHOT:-}
+      REMOTE_VALIDATORS_URL: ${REMOTE_VALIDATORS_URL:-}
+      REMOTE_FORKPOINT_URL: ${REMOTE_FORKPOINT_URL:-}
+      ENABLE_TRACE_CALLS: ${ENABLE_TRACE_CALLS:-true}
+      EXECUTION_EXTRA_FLAGS: ${EXECUTION_EXTRA_FLAGS:-}
+      RPC_EXTRA_FLAGS: ${RPC_EXTRA_FLAGS:-}
+      RETENTION_LEDGER: ${RETENTION_LEDGER:-600}
+      RETENTION_WAL: ${RETENTION_WAL:-300}
+      RETENTION_FORKPOINT: ${RETENTION_FORKPOINT:-300}
+      RETENTION_VALIDATORS: ${RETENTION_VALIDATORS:-43200}
+      MONGO_URL: ${MONGO_URL:-}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-archive-db}
+      ARCHIVE_API_KEY: ${ARCHIVE_API_KEY:-}
+      ARCHIVE_BUCKET: ${ARCHIVE_BUCKET:-}
+      ARCHIVE_URL: ${ARCHIVE_URL:-https://9df09fanz1.execute-api.us-east-2.amazonaws.com/prod}
+      ARCHIVE_REGION: ${ARCHIVE_REGION:-us-east-2}
     ports:
-      # Consensus P2P (always exposed)
       - ${CONSENSUS_PORT:-8000}:${CONSENSUS_PORT:-8000}/tcp
       - ${CONSENSUS_PORT:-8000}:${CONSENSUS_PORT:-8000}/udp
-      # Authenticated peer discovery (always exposed)
       - ${AUTH_PORT:-8001}:${AUTH_PORT:-8001}/udp
-    <<: *logging
     volumes:
       - monad-bft-data:/home/monad/monad-bft
+      - monad-backup:/opt/monad/backup
       - triedb-data:/triedb
-      - keystore-data:/home/monad/.monad-keystore
     labels:
-        # Metrics labels
-        - metrics.scrape=true
-        - metrics.path=/metrics
-        - metrics.port=${METRICS_PORT:-8889}
-        - metrics.instance=monad
-        - metrics.network=${NETWORK}
-
-        # Traefik labels for RPC
-        - traefik.enable=true
-        - traefik.http.routers.${RPC_HOST}.service=${RPC_HOST}
-        - traefik.http.routers.${RPC_HOST}.entrypoints=websecure
-        - traefik.http.routers.${RPC_HOST}.rule=Host(`${RPC_HOST}.${DOMAIN}`)
-        - traefik.http.routers.${RPC_HOST}.tls.certresolver=letsencrypt
-        - traefik.http.routers.${RPC_HOST}lb.service=${RPC_HOST}
-        - traefik.http.routers.${RPC_HOST}lb.entrypoints=websecure
-        - traefik.http.routers.${RPC_HOST}lb.rule=Host(`${RPC_LB}.${DOMAIN}`)
-        - traefik.http.routers.${RPC_HOST}lb.tls.certresolver=letsencrypt
-        - traefik.http.services.${RPC_HOST}.loadbalancer.server.port=${RPC_PORT:-8545}
-
-        # Traefik labels for WebSocket
-        - traefik.http.routers.${WS_HOST:-monadws}.service=${WS_HOST:-monadws}
-        - traefik.http.routers.${WS_HOST:-monadws}.entrypoints=websecure
-        - traefik.http.routers.${WS_HOST:-monadws}.rule=Host(`${WS_HOST:-monadws}.${DOMAIN}`)
-        - traefik.http.routers.${WS_HOST:-monadws}.tls.certresolver=letsencrypt
-        - traefik.http.routers.${WS_HOST:-monadws}lb.service=${WS_HOST:-monadws}
-        - traefik.http.routers.${WS_HOST:-monadws}lb.entrypoints=websecure
-        - traefik.http.routers.${WS_HOST:-monadws}lb.rule=Host(`${WS_LB:-monadws-lb}.${DOMAIN}`)
-        - traefik.http.routers.${WS_HOST:-monadws}lb.tls.certresolver=letsencrypt
-        - traefik.http.services.${WS_HOST:-monadws}.loadbalancer.server.port=${WS_PORT:-8546}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=${METRICS_PORT:-8889}
+      - metrics.instance=monad
+      - metrics.network=${NETWORK:-mainnet}
+      - traefik.enable=true
+      - traefik.http.routers.${RPC_HOST}.service=${RPC_HOST}
+      - traefik.http.routers.${RPC_HOST}.entrypoints=websecure
+      - traefik.http.routers.${RPC_HOST}.rule=Host(`${RPC_HOST}.${DOMAIN}`)
+      - traefik.http.routers.${RPC_HOST}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${RPC_HOST}lb.service=${RPC_HOST}
+      - traefik.http.routers.${RPC_HOST}lb.entrypoints=websecure
+      - traefik.http.routers.${RPC_HOST}lb.rule=Host(`${RPC_LB}.${DOMAIN}`)
+      - traefik.http.routers.${RPC_HOST}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${RPC_HOST}.loadbalancer.server.port=${RPC_PORT}
+      - traefik.http.routers.${WS_HOST:-monadws}.service=${WS_HOST:-monadws}
+      - traefik.http.routers.${WS_HOST:-monadws}.entrypoints=websecure
+      - traefik.http.routers.${WS_HOST:-monadws}.rule=Host(`${WS_HOST:-monadws}.${DOMAIN}`)
+      - traefik.http.routers.${WS_HOST:-monadws}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${WS_HOST:-monadws}lb.service=${WS_HOST:-monadws}
+      - traefik.http.routers.${WS_HOST:-monadws}lb.entrypoints=websecure
+      - traefik.http.routers.${WS_HOST:-monadws}lb.rule=Host(`${WS_LB:-monadws-lb}.${DOMAIN}`)
+      - traefik.http.routers.${WS_HOST:-monadws}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${WS_HOST:-monadws}.loadbalancer.server.port=8081
+    <<: *logging
 
   cli:
     profiles: ["tools"]
@@ -118,23 +87,19 @@ services:
       context: ./monad
       dockerfile: Dockerfile.source
       args:
-        - MONAD_VERSION=${MONAD_VERSION:-0.14.1}
+        MONAD_VERSION: ${MONAD_VERSION:-}
     image: monad:local
     pull_policy: never
-    user: monad
+    entrypoint: ["/bin/bash"]
     environment:
-      - NETWORK=${NETWORK}
-      - NODE_NAME=${NODE_NAME}
-      - RUST_LOG=${LOG_LEVEL:-info}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
+      NETWORK: ${NETWORK:-mainnet}
+      NODE_ROLE: ${NODE_ROLE:-fullnode}
     volumes:
       - monad-bft-data:/home/monad/monad-bft
+      - monad-backup:/opt/monad/backup
       - triedb-data:/triedb
-      - keystore-data:/home/monad/.monad-keystore
-    entrypoint:
-      - /bin/bash
 
 volumes:
   monad-bft-data:
+  monad-backup:
   triedb-data:
-  keystore-data:

@@ -1,6 +1,6 @@
 services:
   monad:
     ports:
-      - ${RPC_PORT:-8545}:${RPC_PORT:-8545}/tcp
-      - ${WS_PORT:-8546}:${WS_PORT:-8546}/tcp
+      - ${RPC_PORT:-8080}:${RPC_PORT:-8080}/tcp
+      - ${WS_PORT:-8081}:${WS_PORT:-8081}/tcp
       - ${METRICS_PORT:-8889}:${METRICS_PORT:-8889}/tcp

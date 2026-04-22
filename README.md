@@ -32,7 +32,7 @@ The Monad binaries are installed from the official Category Labs APT repository 
 
 Defaults used when no flags are provided:
 - Compose service: `monad`
-- Local RPC: `http://127.0.0.1:${RPC_PORT:-8545}`
+- Local RPC: `http://127.0.0.1:${RPC_PORT:-8080}`
 
 Usage:
 - `./ethd check-sync --public-rpc https://monad-rpc.publicnode.com:443`

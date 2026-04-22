@@ -1,244 +1,285 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-echo "=================================================="
-echo "  Monad Full Node Docker Container"
-echo "  Network: ${NETWORK}"
-echo "=================================================="
+log() {
+  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
 
-# Set configuration URLs based on network
-if [ "${NETWORK}" = "mainnet" ]; then
+require_env() {
+  local var="$1"
+  if [ -z "${!var:-}" ]; then
+    log "missing required environment variable: ${var}"
+    exit 1
+  fi
+}
+
+NETWORK="${NETWORK:-mainnet}"
+NODE_ROLE="${NODE_ROLE:-fullnode}"
+CONSENSUS_PORT="${CONSENSUS_PORT:-8000}"
+AUTH_PORT="${AUTH_PORT:-8001}"
+RPC_PORT="${RPC_PORT:-8080}"
+WS_PORT="${WS_PORT:-8081}"
+METRICS_PORT="${METRICS_PORT:-8889}"
+NODE_NAME="${NODE_NAME:-full_monad_docker}"
+BENEFICIARY_ADDRESS="${BENEFICIARY_ADDRESS:-0x0000000000000000000000000000000000000000}"
+SELF_RECORD_SEQ_NUM="${SELF_RECORD_SEQ_NUM:-1}"
+ENABLE_TRACE_CALLS="${ENABLE_TRACE_CALLS:-true}"
+ENABLE_WEBSOCKETS="${ENABLE_WEBSOCKETS:-false}"
+MONAD_BASE_DIR="/home/monad/monad-bft"
+MONAD_CONFIG_DIR="${MONAD_BASE_DIR}/config"
+MONAD_ENV_FILE="/home/monad/.env"
+MONAD_NODE_TOML="${MONAD_CONFIG_DIR}/node.toml"
+BACKUP_DIR="/opt/monad/backup"
+
+case "$NETWORK" in
+  mainnet|testnet) ;;
+  *) log "NETWORK must be mainnet or testnet"; exit 1 ;;
+esac
+
+case "$NETWORK" in
+  mainnet)
     CONFIG_BASE_URL="https://bucket.monadinfra.com/config/mainnet/latest"
-else
+    : "${REMOTE_VALIDATORS_URL:=https://bucket.monadinfra.com/validators/mainnet/validators.toml}"
+    : "${REMOTE_FORKPOINT_URL:=https://bucket.monadinfra.com/forkpoint/mainnet/forkpoint.toml}"
+    ;;
+  testnet)
     CONFIG_BASE_URL="https://bucket.monadinfra.com/config/testnet/latest"
+    : "${REMOTE_VALIDATORS_URL:=https://bucket.monadinfra.com/validators/testnet/validators.toml}"
+    : "${REMOTE_FORKPOINT_URL:=https://bucket.monadinfra.com/forkpoint/testnet/forkpoint.toml}"
+    ;;
+esac
+
+mkdir -p \
+  "${MONAD_CONFIG_DIR}" \
+  "${MONAD_CONFIG_DIR}/forkpoint" \
+  "${MONAD_CONFIG_DIR}/validators" \
+  "${MONAD_BASE_DIR}/ledger" \
+  "${BACKUP_DIR}" \
+  /triedb \
+  /var/log/monad
+
+fetch_if_missing() {
+  local url="$1"
+  local dest="$2"
+  if [ ! -s "$dest" ]; then
+    log "downloading $(basename "$dest") from $url"
+    curl -fsSL "$url" -o "$dest"
+  fi
+}
+
+if [ ! -s "$MONAD_ENV_FILE" ]; then
+  log "bootstrapping .env from ${CONFIG_BASE_URL}/.env.example"
+  curl -fsSL "${CONFIG_BASE_URL}/.env.example" -o "$MONAD_ENV_FILE"
 fi
 
-echo "Configuration URL: ${CONFIG_BASE_URL}"
-
-# Initialize directories
-mkdir -p /home/monad/monad-bft/config/validators
-mkdir -p /home/monad/monad-bft/config/forkpoint
-mkdir -p /home/monad/monad-bft/ledger
-mkdir -p /home/monad/.monad-keystore
-
-# Check if this is first run
-if [ ! -f /home/monad/.initialized ]; then
-    echo "First run detected. Initializing node..."
-
-    # Generate keystore if it doesn't exist
-    if [ ! -f /home/monad/.monad-keystore/bls.key ] || [ ! -f /home/monad/.monad-keystore/secp.key ]; then
-        echo "Generating keystore..."
-
-        # Generate a random keystore password if not provided
-        if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
-            KEYSTORE_PASSWORD=$(openssl rand -base64 32)
-            echo "=================================================="
-            echo "⚠️  GENERATED KEYSTORE PASSWORD (SAVE THIS!):"
-            echo "    ${KEYSTORE_PASSWORD}"
-            echo "=================================================="
-        fi
-
-        # Create keystore for BLS and SECP
-        echo "${KEYSTORE_PASSWORD}" | monad-keystore create --keystore /home/monad/.monad-keystore --key-type bls
-        echo "${KEYSTORE_PASSWORD}" | monad-keystore create --keystore /home/monad/.monad-keystore --key-type secp
-
-        echo "Keystore created successfully"
-    fi
-
-    # Initialize TrieDB (in Docker, we use a volume instead of raw device)
-    if [ ! -f /triedb/.initialized ]; then
-        echo "Initializing TrieDB..."
-        # Note: In production, this should be a dedicated NVMe device
-        # For Docker testing, we just mark it as initialized
-        touch /triedb/.initialized
-    fi
-
-    # Download and extract snapshot if provided (for fast sync)
-    if [ -n "${SNAPSHOT:-}" ]; then
-        # Only download if ledger data doesn't already exist
-        if [ -d "/home/monad/monad-bft/ledger/blocks" ] || [ -d "/home/monad/monad-bft/ledger/db" ]; then
-            echo ""
-            echo "Existing ledger data detected, skipping snapshot download"
-        else
-            echo ""
-            echo "Snapshot URL provided: ${SNAPSHOT}"
-            echo "Downloading snapshot for fast sync..."
-
-        # Use aria2c for faster multi-connection download if available
-        if command -v aria2c &> /dev/null; then
-            echo "Using aria2c for faster download (multi-connection)..."
-            aria2c -x 16 -s 16 -k 1M --file-allocation=none --allow-overwrite=true -d /tmp -o monad-snapshot "$SNAPSHOT"
-        else
-            echo "aria2c not found, falling back to curl..."
-            curl -L -o /tmp/monad-snapshot "$SNAPSHOT"
-        fi
-
-        echo "Download complete, extracting snapshot..."
-
-        # Detect file type and extract accordingly
-        # Monad snapshots are typically .tar.zst format
-        if file /tmp/monad-snapshot | grep -q "Zstandard compressed"; then
-            echo "Detected Zstandard compression, extracting with zstd..."
-            zstd -c -d /tmp/monad-snapshot | tar -x -C /home/monad/monad-bft/
-        elif file /tmp/monad-snapshot | grep -q "LZ4 compressed"; then
-            echo "Detected LZ4 compression, extracting with lz4..."
-            lz4 -c -d /tmp/monad-snapshot | tar -x -C /home/monad/monad-bft/
-        elif file /tmp/monad-snapshot | grep -q "gzip compressed"; then
-            echo "Detected gzip compression, extracting with tar..."
-            tar -xzf /tmp/monad-snapshot -C /home/monad/monad-bft/
-        else
-            echo "Unknown compression format, trying tar directly..."
-            tar -xf /tmp/monad-snapshot -C /home/monad/monad-bft/
-        fi
-
-        rm -f /tmp/monad-snapshot
-        echo "Snapshot extraction complete"
-
-        # Download and extract second part if specified
-        if [ -n "${SNAPSHOT_PART:-}" ]; then
-            echo ""
-            echo "Downloading snapshot part 2: ${SNAPSHOT_PART}"
-
-            if command -v aria2c &> /dev/null; then
-                aria2c -x 16 -s 16 -k 1M --file-allocation=none --allow-overwrite=true -d /tmp -o monad-snapshot-part2 "$SNAPSHOT_PART"
-            else
-                curl -L -o /tmp/monad-snapshot-part2 "$SNAPSHOT_PART"
-            fi
-
-            echo "Extracting snapshot part 2..."
-
-            if file /tmp/monad-snapshot-part2 | grep -q "Zstandard compressed"; then
-                zstd -c -d /tmp/monad-snapshot-part2 | tar -x -C /home/monad/monad-bft/
-            elif file /tmp/monad-snapshot-part2 | grep -q "LZ4 compressed"; then
-                lz4 -c -d /tmp/monad-snapshot-part2 | tar -x -C /home/monad/monad-bft/
-            elif file /tmp/monad-snapshot-part2 | grep -q "gzip compressed"; then
-                tar -xzf /tmp/monad-snapshot-part2 -C /home/monad/monad-bft/
-            else
-                tar -xf /tmp/monad-snapshot-part2 -C /home/monad/monad-bft/
-            fi
-
-            rm -f /tmp/monad-snapshot-part2
-            echo "Snapshot part 2 extraction complete"
-        fi
-        fi  # Close the ledger data check
-    else
-        echo ""
-        echo "No snapshot URL provided, will sync from genesis/checkpoint"
-    fi
-
-    # Fetch remote configuration files
-    echo ""
-    echo "Fetching configuration files from ${CONFIG_BASE_URL}..."
-
-    # Download validators configuration
-    if [ -n "${VALIDATORS_REMOTE_URL:-}" ]; then
-        echo "Downloading validators from ${VALIDATORS_REMOTE_URL}..."
-        curl -fsSL "${VALIDATORS_REMOTE_URL}" -o /home/monad/monad-bft/config/validators/validators.json
-    else
-        curl -fsSL "${CONFIG_BASE_URL}/validators.json" -o /home/monad/monad-bft/config/validators/validators.json || \
-            echo "Warning: Could not download validators.json"
-    fi
-
-    # Download forkpoint configuration
-    if [ -n "${FORKPOINT_REMOTE_URL:-}" ]; then
-        echo "Downloading forkpoint from ${FORKPOINT_REMOTE_URL}..."
-        curl -fsSL "${FORKPOINT_REMOTE_URL}" -o /home/monad/monad-bft/config/forkpoint/forkpoint.json
-    else
-        curl -fsSL "${CONFIG_BASE_URL}/forkpoint.json" -o /home/monad/monad-bft/config/forkpoint/forkpoint.json || \
-            echo "Warning: Could not download forkpoint.json"
-    fi
-
-    echo "Configuration files downloaded"
+if [ ! -s "$MONAD_NODE_TOML" ]; then
+  if [ "$NODE_ROLE" = "validator" ]; then
+    log "bootstrapping validator node.toml"
+    curl -fsSL "${CONFIG_BASE_URL}/node.toml" -o "$MONAD_NODE_TOML"
+  else
+    log "bootstrapping full-node node.toml"
+    curl -fsSL "${CONFIG_BASE_URL}/full-node-node.toml" -o "$MONAD_NODE_TOML"
+  fi
 fi
 
-# Get public IP
-PUBLIC_IP=$(curl -s --max-time 10 ifconfig.me || echo "127.0.0.1")
-echo ""
-echo "Public IP: ${PUBLIC_IP}"
+fetch_if_missing "$REMOTE_VALIDATORS_URL" "${MONAD_CONFIG_DIR}/validators/validators.toml"
+fetch_if_missing "$REMOTE_FORKPOINT_URL" "${MONAD_CONFIG_DIR}/forkpoint/forkpoint.toml"
 
-# Create/Update node.toml configuration
-echo "Creating node.toml configuration..."
-cat > /home/monad/monad-bft/config/node.toml <<EOF
-# Monad Node Configuration
-# Network: ${NETWORK}
-
-# Node identification
-node_name = "${NODE_NAME}"
-beneficiary = "${BENEFICIARY_ADDRESS}"
-
-# Network configuration
-[network]
-listen_addr = "0.0.0.0:${CONSENSUS_PORT}"
-public_addr = "${PUBLIC_IP}:${CONSENSUS_PORT}"
-auth_port = ${AUTH_PORT}
-
-# Full node raptorcast settings
-[fullnode_raptorcast]
-enable_client = true
-
-# State sync settings (for catching up after snapshot)
-[statesync]
-expand_to_group = true
-
-# Peer discovery (optional: add bootstrap peers)
-${BOOTSTRAP_PEERS:+bootstrap_peers = "${BOOTSTRAP_PEERS}"}
-EOF
-
-echo "node.toml created"
-
-# Create .env file for Monad services
-echo "Creating environment configuration..."
-cat > /home/monad/.env <<EOF
-# Monad Environment Configuration
-KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
-NETWORK=${NETWORK}
-
-# Retention settings (in minutes)
-RETENTION_BFT_HEADERS=${RETENTION_BFT_HEADERS:-10080}
-RETENTION_BFT_BODIES=${RETENTION_BFT_BODIES:-10080}
-RETENTION_EXEC_BLOCKS=${RETENTION_EXEC_BLOCKS:-10080}
-RETENTION_EXEC_RECEIPTS=${RETENTION_EXEC_RECEIPTS:-10080}
-
-# Archive configuration (optional)
-${ARCHIVE_API_KEY:+ARCHIVE_API_KEY=${ARCHIVE_API_KEY}}
-${ARCHIVE_BUCKET:+ARCHIVE_BUCKET=${ARCHIVE_BUCKET}}
-${MONGO_URL:+MONGO_URL=${MONGO_URL}}
-${MONGO_DB_NAME:+MONGO_DB_NAME=${MONGO_DB_NAME}}
-
-# Remote configuration URLs
-${VALIDATORS_REMOTE_URL:+VALIDATORS_REMOTE_URL=${VALIDATORS_REMOTE_URL}}
-${FORKPOINT_REMOTE_URL:+FORKPOINT_REMOTE_URL=${FORKPOINT_REMOTE_URL}}
-EOF
-
-echo ".env created"
-
-# Export extra flags for execution client (for RPC nodes)
-export EXECUTION_EXTRA_FLAGS="${EXECUTION_EXTRA_FLAGS:-}"
-if [ "${ENABLE_TRACE_CALLS}" = "true" ]; then
-    export EXECUTION_EXTRA_FLAGS="${EXECUTION_EXTRA_FLAGS} --trace_calls"
+if ! grep -Eq '^KEYSTORE_PASSWORD=' "$MONAD_ENV_FILE"; then
+  printf 'KEYSTORE_PASSWORD=\n' >> "$MONAD_ENV_FILE"
 fi
 
-# If archive configuration is provided, add flags
-if [ -n "${ARCHIVE_API_KEY:-}" ] && [ -n "${ARCHIVE_BUCKET:-}" ]; then
-    export EXECUTION_EXTRA_FLAGS="${EXECUTION_EXTRA_FLAGS} --s3-bucket ${ARCHIVE_BUCKET} --region ${ARCHIVE_REGION:-us-east-1} --archive-url ${ARCHIVE_URL} --archive-api-key ${ARCHIVE_API_KEY}"
+if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
+  current_pw="$(sed -n 's/^KEYSTORE_PASSWORD=//p' "$MONAD_ENV_FILE" | tail -n1)"
+  if [ -n "$current_pw" ]; then
+    KEYSTORE_PASSWORD="$current_pw"
+  else
+    KEYSTORE_PASSWORD="$(openssl rand -base64 32)"
+    sed -i "s|^KEYSTORE_PASSWORD=.*$|KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}|" "$MONAD_ENV_FILE"
+    printf 'Keystore password: %s\n' "$KEYSTORE_PASSWORD" > "${BACKUP_DIR}/keystore-password-backup"
+    chmod 600 "${BACKUP_DIR}/keystore-password-backup"
+    log "generated KEYSTORE_PASSWORD and stored backup in ${BACKUP_DIR}/keystore-password-backup"
+  fi
+fi
+export KEYSTORE_PASSWORD
+
+if [ ! -f "${MONAD_CONFIG_DIR}/id-secp" ] || [ ! -f "${MONAD_CONFIG_DIR}/id-bls" ]; then
+  log "generating keystores"
+  if [ ! -f "${MONAD_CONFIG_DIR}/id-secp" ]; then
+    monad-keystore create \
+      --key-type secp \
+      --keystore-path "${MONAD_CONFIG_DIR}/id-secp" \
+      --password "${KEYSTORE_PASSWORD}" > "${BACKUP_DIR}/secp-backup"
+  fi
+  if [ ! -f "${MONAD_CONFIG_DIR}/id-bls" ]; then
+    monad-keystore create \
+      --key-type bls \
+      --keystore-path "${MONAD_CONFIG_DIR}/id-bls" \
+      --password "${KEYSTORE_PASSWORD}" > "${BACKUP_DIR}/bls-backup"
+  fi
+  grep 'public key' "${BACKUP_DIR}/secp-backup" "${BACKUP_DIR}/bls-backup" > /home/monad/pubkey-secp-bls || true
 fi
 
+if [ -n "${SNAPSHOT:-}" ] && [ ! -e "${MONAD_BASE_DIR}/ledger/.snapshot_loaded" ]; then
+  log "snapshot requested; downloading from ${SNAPSHOT}"
+  SNAP_TMP=/tmp/monad-snapshot
+  if command -v aria2c >/dev/null 2>&1; then
+    aria2c -x 16 -s 16 -k 1M --file-allocation=none --allow-overwrite=true -d /tmp -o monad-snapshot "$SNAPSHOT"
+  else
+    curl -fsSL "$SNAPSHOT" -o "$SNAP_TMP"
+  fi
+  if file "$SNAP_TMP" | grep -q 'Zstandard compressed'; then
+    zstd -c -d "$SNAP_TMP" | tar -x -C "$MONAD_BASE_DIR"
+  elif file "$SNAP_TMP" | grep -q 'LZ4 compressed'; then
+    lz4 -c -d "$SNAP_TMP" | tar -x -C "$MONAD_BASE_DIR"
+  else
+    tar -xf "$SNAP_TMP" -C "$MONAD_BASE_DIR"
+  fi
+  rm -f "$SNAP_TMP"
+  touch "${MONAD_BASE_DIR}/ledger/.snapshot_loaded"
+fi
+
+PUBLIC_IP="${PUBLIC_IP:-}"
+if [ -z "$PUBLIC_IP" ]; then
+  PUBLIC_IP="$(curl -fsS --max-time 10 ifconfig.me || true)"
+fi
+require_env NODE_NAME
+require_env BENEFICIARY_ADDRESS
+
+python3 - "$MONAD_NODE_TOML" "$BENEFICIARY_ADDRESS" "$NODE_NAME" "$PUBLIC_IP" "$CONSENSUS_PORT" "$AUTH_PORT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+beneficiary = sys.argv[2]
+node_name = sys.argv[3]
+public_ip = sys.argv[4]
+consensus_port = sys.argv[5]
+auth_port = sys.argv[6]
+text = path.read_text()
+
+def replace_scalar(key, value):
+    global text
+    pattern = rf'(?m)^\s*{re.escape(key)}\s*=\s*.*$'
+    repl = f'{key} = {value}'
+    if re.search(pattern, text):
+        text = re.sub(pattern, repl, text, count=1)
+    else:
+        text += f'\n{repl}\n'
+
+def ensure_in_section(section, key, value):
+    global text
+    sec_pat = rf'(?ms)^\[{re.escape(section)}\]\n(.*?)(?=^\[|\Z)'
+    m = re.search(sec_pat, text)
+    line = f'{key} = {value}'
+    if m:
+      body = m.group(1)
+      if re.search(rf'(?m)^\s*{re.escape(key)}\s*=\s*.*$', body):
+          new_body = re.sub(rf'(?m)^\s*{re.escape(key)}\s*=\s*.*$', line, body, count=1)
+      else:
+          new_body = body + ('' if body.endswith('\n') else '\n') + line + '\n'
+      text = text[:m.start(1)] + new_body + text[m.end(1):]
+    else:
+      text += f'\n[{section}]\n{line}\n'
+
+replace_scalar('beneficiary', f'"{beneficiary}"')
+replace_scalar('node_name', f'"{node_name}"')
+ensure_in_section('fullnode_raptorcast', 'enable_client', 'true')
+ensure_in_section('statesync', 'expand_to_group', 'true')
+if public_ip:
+    ensure_in_section('peer_discovery', 'self_address', f'"{public_ip}:{consensus_port}"')
+    ensure_in_section('peer_discovery', 'authenticated_udp_port', auth_port)
+path.write_text(text)
+PY
+
+if [ -n "$PUBLIC_IP" ]; then
+  log "generating name-record signature for ${PUBLIC_IP}"
+  NAME_RECORD_OUTPUT="$(monad-sign-name-record \
+    --address "${PUBLIC_IP}:${CONSENSUS_PORT}" \
+    --authenticated-udp-port "${AUTH_PORT}" \
+    --keystore-path "${MONAD_CONFIG_DIR}/id-secp" \
+    --password "${KEYSTORE_PASSWORD}" \
+    --self-record-seq-num "${SELF_RECORD_SEQ_NUM}")"
+  export NAME_RECORD_OUTPUT SELF_RECORD_SEQ_NUM
+  python3 - "$MONAD_NODE_TOML" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+out = os.environ['NAME_RECORD_OUTPUT']
+seq = os.environ['SELF_RECORD_SEQ_NUM']
+match = re.search(r'([0-9a-fA-F]{80,})', out)
+if not match:
+    print('warning: could not extract self_name_record_sig from monad-sign-name-record output', file=sys.stderr)
+    sys.exit(0)
+sig = match.group(1)
+
+def ensure(section, key, value):
+    global text
+    sec_pat = rf'(?ms)^\[{re.escape(section)}\]\n(.*?)(?=^\[|\Z)'
+    m = re.search(sec_pat, text)
+    line = f'{key} = {value}'
+    if m:
+        body = m.group(1)
+        if re.search(rf'(?m)^\s*{re.escape(key)}\s*=\s*.*$', body):
+            new_body = re.sub(rf'(?m)^\s*{re.escape(key)}\s*=\s*.*$', line, body, count=1)
+        else:
+            new_body = body + ('' if body.endswith('\n') else '\n') + line + '\n'
+        text = text[:m.start(1)] + new_body + text[m.end(1):]
+    else:
+        text += f'\n[{section}]\n{line}\n'
+
+ensure('peer_discovery', 'self_record_seq_num', seq)
+ensure('peer_discovery', 'self_name_record_sig', f'"{sig}"')
+path.write_text(text)
+PY
+fi
+
+RETENTION_LEDGER="${RETENTION_LEDGER:-600}"
+RETENTION_WAL="${RETENTION_WAL:-300}"
+RETENTION_FORKPOINT="${RETENTION_FORKPOINT:-300}"
+RETENTION_VALIDATORS="${RETENTION_VALIDATORS:-43200}"
+
+cat > "$MONAD_ENV_FILE" <<ENVEOF
+KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}
+REMOTE_VALIDATORS_URL=${REMOTE_VALIDATORS_URL}
+REMOTE_FORKPOINT_URL=${REMOTE_FORKPOINT_URL}
+RETENTION_LEDGER=${RETENTION_LEDGER}
+RETENTION_WAL=${RETENTION_WAL}
+RETENTION_FORKPOINT=${RETENTION_FORKPOINT}
+RETENTION_VALIDATORS=${RETENTION_VALIDATORS}
+ENVEOF
+
+EXECUTION_EXTRA_FLAGS="${EXECUTION_EXTRA_FLAGS:-}"
+if [ "${ENABLE_TRACE_CALLS:-true}" = "true" ]; then
+  EXECUTION_EXTRA_FLAGS="${EXECUTION_EXTRA_FLAGS} --trace_calls"
+fi
+export EXECUTION_EXTRA_FLAGS
+
+RPC_EXTRA_FLAGS="${RPC_EXTRA_FLAGS:-}"
+if [ "${ENABLE_WEBSOCKETS:-false}" = "true" ]; then
+  RPC_EXTRA_FLAGS="${RPC_EXTRA_FLAGS} --ws-enabled --ws-port ${WS_PORT}"
+fi
 if [ -n "${MONGO_URL:-}" ]; then
-    export EXECUTION_EXTRA_FLAGS="${EXECUTION_EXTRA_FLAGS} --mongo-url ${MONGO_URL} --mongo-db-name ${MONGO_DB_NAME:-monad-archive} --use-eth-get-logs-index"
+  RPC_EXTRA_FLAGS="${RPC_EXTRA_FLAGS} --mongo-url ${MONGO_URL} --mongo-db-name ${MONGO_DB_NAME:-archive-db} --use-eth-get-logs-index"
+fi
+if [ -n "${ARCHIVE_API_KEY:-}" ] && [ -n "${ARCHIVE_BUCKET:-}" ]; then
+  RPC_EXTRA_FLAGS="${RPC_EXTRA_FLAGS} --s3-bucket ${ARCHIVE_BUCKET} --region ${ARCHIVE_REGION:-us-east-2} --archive-url ${ARCHIVE_URL:-https://9df09fanz1.execute-api.us-east-2.amazonaws.com/prod} --archive-api-key ${ARCHIVE_API_KEY}"
+fi
+export RPC_EXTRA_FLAGS
+
+log "startup summary"
+log "network=${NETWORK} role=${NODE_ROLE} rpc_port=${RPC_PORT} ws_port=${WS_PORT} metrics_port=${METRICS_PORT}"
+log "node.toml prepared at ${MONAD_NODE_TOML}"
+log "execution flags: ${EXECUTION_EXTRA_FLAGS:-<none>}"
+log "rpc flags: ${RPC_EXTRA_FLAGS:-<none>}"
+
+if [ "${ENABLE_WEBSOCKETS}" = "true" ]; then
+  log "WebSockets enabled on port ${WS_PORT}; this requires execution-events host setup or monad-rpc may exit"
 fi
 
-# Mark as initialized
-touch /home/monad/.initialized
-
-echo ""
-echo "=================================================="
-echo "  Initialization complete!"
-echo "=================================================="
-echo "Starting Monad services:"
-echo "  - monad-bft (consensus)"
-echo "  - monad-execution (execution layer)"
-echo "  - monad-rpc (RPC server)"
-echo "=================================================="
-
-# Execute the command (supervisord)
 exec "$@"
