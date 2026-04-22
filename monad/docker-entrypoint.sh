@@ -13,6 +13,7 @@ require_env() {
   fi
 }
 
+CHAIN="${CHAIN:-}"
 NETWORK="${NETWORK:-mainnet}"
 NODE_ROLE="${NODE_ROLE:-fullnode}"
 CONSENSUS_PORT="${CONSENSUS_PORT:-8000}"
@@ -32,8 +33,13 @@ MONAD_NODE_TOML="${MONAD_CONFIG_DIR}/node.toml"
 BACKUP_DIR="/opt/monad/backup"
 
 case "$NETWORK" in
-  mainnet|testnet) ;;
-  *) log "NETWORK must be mainnet or testnet"; exit 1 ;;
+  mainnet|testnet)
+    CHAIN="monad_${NETWORK}"
+    ;;
+  *)
+    log "NETWORK must be mainnet or testnet"
+    exit 1
+    ;;
 esac
 
 case "$NETWORK" in
@@ -48,6 +54,8 @@ case "$NETWORK" in
     : "${REMOTE_FORKPOINT_URL:=https://bucket.monadinfra.com/forkpoint/testnet/forkpoint.toml}"
     ;;
 esac
+
+export CHAIN
 
 mkdir -p \
   "${MONAD_CONFIG_DIR}" \
@@ -245,6 +253,7 @@ RETENTION_FORKPOINT="${RETENTION_FORKPOINT:-300}"
 RETENTION_VALIDATORS="${RETENTION_VALIDATORS:-43200}"
 
 cat > "$MONAD_ENV_FILE" <<ENVEOF
+CHAIN=${CHAIN}
 KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}
 REMOTE_VALIDATORS_URL=${REMOTE_VALIDATORS_URL}
 REMOTE_FORKPOINT_URL=${REMOTE_FORKPOINT_URL}

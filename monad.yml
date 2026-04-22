@@ -17,6 +17,10 @@ services:
     pull_policy: never
     restart: unless-stopped
     stop_grace_period: 5m
+    ulimits:
+      nofile:
+        soft: 16384
+        hard: 16384
     environment:
       NETWORK: ${NETWORK:-mainnet}
       NODE_ROLE: ${NODE_ROLE:-fullnode}
@@ -34,6 +38,7 @@ services:
       REMOTE_VALIDATORS_URL: ${REMOTE_VALIDATORS_URL:-}
       REMOTE_FORKPOINT_URL: ${REMOTE_FORKPOINT_URL:-}
       ENABLE_TRACE_CALLS: ${ENABLE_TRACE_CALLS:-true}
+      ENABLE_WEBSOCKETS: "${ENABLE_WEBSOCKETS:-false}"
       EXECUTION_EXTRA_FLAGS: ${EXECUTION_EXTRA_FLAGS:-}
       RPC_EXTRA_FLAGS: ${RPC_EXTRA_FLAGS:-}
       RETENTION_LEDGER: ${RETENTION_LEDGER:-600}
@@ -69,7 +74,7 @@ services:
       - traefik.http.routers.${RPC_HOST}lb.entrypoints=websecure
       - traefik.http.routers.${RPC_HOST}lb.rule=Host(`${RPC_LB}.${DOMAIN}`)
       - traefik.http.routers.${RPC_HOST}lb.tls.certresolver=letsencrypt
-      - traefik.http.services.${RPC_HOST}.loadbalancer.server.port=${RPC_PORT}
+      - traefik.http.services.${RPC_HOST}.loadbalancer.server.port=${RPC_PORT:-8080}
       - traefik.http.routers.${WS_HOST:-monadws}.service=${WS_HOST:-monadws}
       - traefik.http.routers.${WS_HOST:-monadws}.entrypoints=websecure
       - traefik.http.routers.${WS_HOST:-monadws}.rule=Host(`${WS_HOST:-monadws}.${DOMAIN}`)
@@ -78,7 +83,7 @@ services:
       - traefik.http.routers.${WS_HOST:-monadws}lb.entrypoints=websecure
       - traefik.http.routers.${WS_HOST:-monadws}lb.rule=Host(`${WS_LB:-monadws-lb}.${DOMAIN}`)
       - traefik.http.routers.${WS_HOST:-monadws}lb.tls.certresolver=letsencrypt
-      - traefik.http.services.${WS_HOST:-monadws}.loadbalancer.server.port=8081
+      - traefik.http.services.${WS_HOST:-monadws}.loadbalancer.server.port=${WS_PORT:-8081}
     <<: *logging
 
   cli:
