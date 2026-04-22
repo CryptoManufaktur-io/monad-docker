@@ -197,7 +197,7 @@ ensure_in_section('fullnode_raptorcast', 'enable_client', 'true')
 ensure_in_section('statesync', 'expand_to_group', 'true')
 if public_ip:
     ensure_in_section('peer_discovery', 'self_address', f'"{public_ip}:{consensus_port}"')
-    ensure_in_section('peer_discovery', 'authenticated_udp_port', auth_port)
+    ensure_in_section('peer_discovery', 'self_auth_port', auth_port)
 path.write_text(text)
 PY
 
