@@ -64,8 +64,6 @@ mkdir -p \
   "${BACKUP_DIR}" \
   /var/log/monad
 
-mkdir -p /dev/triedb
-
 fetch_if_missing() {
   local url="$1"
   local dest="$2"
