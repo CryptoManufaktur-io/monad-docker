@@ -13,7 +13,6 @@ require_env() {
   fi
 }
 
-CHAIN="${CHAIN:-}"
 NETWORK="${NETWORK:-mainnet}"
 NODE_ROLE="${NODE_ROLE:-fullnode}"
 CONSENSUS_PORT="${CONSENSUS_PORT:-8000}"
@@ -63,8 +62,9 @@ mkdir -p \
   "${MONAD_CONFIG_DIR}/validators" \
   "${MONAD_BASE_DIR}/ledger" \
   "${BACKUP_DIR}" \
-  /triedb \
   /var/log/monad
+
+mkdir -p /dev/triedb
 
 fetch_if_missing() {
   local url="$1"
@@ -128,24 +128,51 @@ if [ ! -f "${MONAD_CONFIG_DIR}/id-secp" ] || [ ! -f "${MONAD_CONFIG_DIR}/id-bls"
   grep 'public key' "${BACKUP_DIR}/secp-backup" "${BACKUP_DIR}/bls-backup" > /home/monad/pubkey-secp-bls || true
 fi
 
-if [ -n "${SNAPSHOT:-}" ] && [ ! -e "${MONAD_BASE_DIR}/ledger/.snapshot_loaded" ]; then
-  log "snapshot requested; downloading from ${SNAPSHOT}"
-  SNAP_TMP=/tmp/monad-snapshot
-  if command -v aria2c >/dev/null 2>&1; then
-    aria2c -x 16 -s 16 -k 1M --file-allocation=none --allow-overwrite=true -d /tmp -o monad-snapshot "$SNAPSHOT"
-  else
-    curl -fsSL "$SNAPSHOT" -o "$SNAP_TMP"
+restore_snapshot_if_requested() {
+  local snapshot_flag provider restore_script_url
+  snapshot_flag="$(printf '%s' "${SNAPSHOT:-false}" | tr '[:upper:]' '[:lower:]')"
+  provider="${SNAPSHOT_PROVIDER:-monad-foundation}"
+
+  if [ "$snapshot_flag" != "true" ]; then
+    return 0
   fi
-  if file "$SNAP_TMP" | grep -q 'Zstandard compressed'; then
-    zstd -c -d "$SNAP_TMP" | tar -x -C "$MONAD_BASE_DIR"
-  elif file "$SNAP_TMP" | grep -q 'LZ4 compressed'; then
-    lz4 -c -d "$SNAP_TMP" | tar -x -C "$MONAD_BASE_DIR"
-  else
-    tar -xf "$SNAP_TMP" -C "$MONAD_BASE_DIR"
+
+  if [ -e "${MONAD_BASE_DIR}/ledger/.snapshot_loaded" ]; then
+    log "snapshot restore already completed earlier; skipping"
+    return 0
   fi
-  rm -f "$SNAP_TMP"
+
+  case "$provider" in
+    monad-foundation)
+      case "$NETWORK" in
+        mainnet) restore_script_url="https://bucket.monadinfra.com/scripts/mainnet/restore-from-snapshot.sh" ;;
+        testnet) restore_script_url="https://bucket.monadinfra.com/scripts/testnet/restore-from-snapshot.sh" ;;
+      esac
+      ;;
+    category-labs)
+      case "$NETWORK" in
+        mainnet) restore_script_url="https://pub-b0d0d7272c994851b4c8af22a766f571.r2.dev/scripts/mainnet/restore_from_snapshot.sh" ;;
+        testnet) restore_script_url="https://pub-b0d0d7272c994851b4c8af22a766f571.r2.dev/scripts/testnet/restore_from_snapshot.sh" ;;
+      esac
+      ;;
+    *)
+      log "invalid SNAPSHOT_PROVIDER=${provider}; expected monad-foundation or category-labs"
+      exit 1
+      ;;
+  esac
+
+  log "restoring TrieDB snapshot using provider=${provider} network=${NETWORK}"
+  log "running ${restore_script_url}"
+
+  if ! command -v aria2c >/dev/null 2>&1; then
+    log "aria2 is required for snapshot restore"
+    exit 1
+  fi
+
+  curl -fsSL "${restore_script_url}" | bash
   touch "${MONAD_BASE_DIR}/ledger/.snapshot_loaded"
-fi
+  log "snapshot restore completed"
+}
 
 PUBLIC_IP="${PUBLIC_IP:-}"
 if [ -z "$PUBLIC_IP" ]; then
@@ -262,6 +289,8 @@ RETENTION_WAL=${RETENTION_WAL}
 RETENTION_FORKPOINT=${RETENTION_FORKPOINT}
 RETENTION_VALIDATORS=${RETENTION_VALIDATORS}
 ENVEOF
+
+restore_snapshot_if_requested
 
 EXECUTION_EXTRA_FLAGS="${EXECUTION_EXTRA_FLAGS:-}"
 if [ "${ENABLE_TRACE_CALLS:-true}" = "true" ]; then
