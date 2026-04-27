@@ -62,7 +62,8 @@ services:
     volumes:
       - monad-bft-data:/home/monad/monad-bft
       - monad-backup:/opt/monad/backup
-      - triedb-data:/dev/triedb
+      - ${TRIEDB_PATH:-/dev/triedb}:/dev/triedb
+      #- triedb-data:/dev/triedb
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
@@ -106,9 +107,10 @@ services:
     volumes:
       - monad-bft-data:/home/monad/monad-bft
       - monad-backup:/opt/monad/backup
-      - triedb-data:/dev/triedb
+      - ${TRIEDB_PATH:-/dev/triedb}:/dev/triedb
+      #- triedb-data:/dev/triedb
 
 volumes:
   monad-bft-data:
   monad-backup:
-  triedb-data:
+  #triedb-data:
