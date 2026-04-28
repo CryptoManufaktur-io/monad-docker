@@ -7,6 +7,50 @@ x-logging: &logging
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
+  triedb-init:
+    build:
+      context: ./monad
+      dockerfile: Dockerfile.source
+      args:
+        MONAD_VERSION: ${MONAD_VERSION:-}
+    image: monad:local
+    pull_policy: never
+    restart: "no"
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+    entrypoint:
+      - /bin/bash
+      - -lc
+      - |
+        set -Eeuo pipefail
+
+        if [ ! -b /dev/triedb ]; then
+          echo "/dev/triedb is missing or is not a block device"
+          exit 1
+        fi
+
+        if [ -f /home/monad/monad-bft/.triedb_initialized ]; then
+          echo "TrieDB already initialized, skipping"
+          exit 0
+        fi
+
+        echo "Initializing TrieDB with monad-mpt..."
+        /usr/local/bin/monad-mpt
+
+        echo "Verifying TrieDB initialization..."
+        /usr/local/bin/monad-cli --db /dev/triedb --info >/tmp/triedb-info.txt 2>&1 || {
+          echo "TrieDB verification failed"
+          cat /tmp/triedb-info.txt
+          exit 1
+        }
+
+        touch /home/monad/monad-bft/.triedb_initialized
+        echo "TrieDB initialization completed"
+    volumes:
+      - monad-bft-data:/home/monad/monad-bft
+      - ${TRIEDB_PATH:-/dev/triedb}:/dev/triedb
+  
   monad:
     build:
       context: ./monad
@@ -90,6 +134,9 @@ services:
       - traefik.http.routers.${WS_HOST:-monadws}lb.tls.certresolver=letsencrypt
       - traefik.http.services.${WS_HOST:-monadws}.loadbalancer.server.port=${WS_PORT:-8081}
     <<: *logging
+    depends_on:
+      triedb-init:
+        condition: service_completed_successfully
 
   cli:
     profiles: ["tools"]
