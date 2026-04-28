@@ -16,10 +16,40 @@ services:
     image: monad:local
     pull_policy: never
     restart: "no"
+    ulimits:
+      nofile:
+        soft: 16384
+        hard: 16384
     privileged: true
     security_opt:
       - seccomp=unconfined
     entrypoint:
+      - /bin/bash
+      - -lc
+      - |
+        set -Eeuo pipefail
+
+        if [ ! -b /dev/triedb ]; then
+          echo "/dev/triedb is missing or is not a block device"
+          exit 1
+        fi
+
+        if [ -f /home/monad/monad-bft/.triedb_initialized ]; then
+          echo "TrieDB already initialized, skipping"
+          exit 0
+        fi
+
+        echo "Initializing TrieDB with monad-mpt..."
+        /usr/local/bin/monad-mpt --storage /dev/triedb --create
+
+        echo "Verifying TrieDB initialization..."
+        /usr/local/bin/monad-mpt --storage /dev/triedb >/tmp/triedb-check.txt 2>&1 || {
+          cat /tmp/triedb-check.txt
+          exit 1
+        }
+
+        touch /home/monad/monad-bft/.triedb_initialized
+        echo "TrieDB initialization completed"
       - /bin/bash
       - -lc
       - |
